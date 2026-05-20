@@ -1,2 +1,3 @@
 此為工創概論期末專題: 循跡自走車
-![image.png](attachment:3b8596ad-44b7-444a-ac52-1b994105abae:image.png)
+
+<img width="456" height="397" alt="image" src="https://github.com/user-attachments/assets/14862240-f124-420e-b5df-4741c3318bd3" />
