@@ -63,7 +63,7 @@ const uint16_t interval = 250;
 uint8_t lastSensorState = 255; 
 
 // 自走車自動循跡基礎速度
-const int TRACK_SPEED = 160; 
+const int TRACK_SPEED = 120; 
 
 // ==========================================
 // setup() 初始設定

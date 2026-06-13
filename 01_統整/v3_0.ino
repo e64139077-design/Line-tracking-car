@@ -1,6 +1,6 @@
 // 25組循跡自走車 可以動作版
 // 可以作用 問題: 做第2個直角灣後會直走暴衝
-   //可能須新增 偵測到2秒後  暫停倒車  第5秒停止 
+   //可能須新增 偵測到2秒後  暫停倒車  第4秒停止 
 
 #define REMOTEXY_MODE__ESP32CORE_BLE
 #include <BLEDevice.h>
@@ -110,60 +110,92 @@ void loop()
         lastTrackPrint = currentMillis;
       }
       break;
-    case 3: // 自主：開始循跡導航，用加權平均法 & PID控制
-      { 
-        // 燈號閃爍
-        if (currentMillis - lastLedToggleMillis >= 250) {
-          ledState = !ledState; digitalWrite(RED_PIN, ledState); lastLedToggleMillis = currentMillis;
-        }
-        int s1 = !digitalRead(TRACK_1_PIN); 
-        int s2 = !digitalRead(TRACK_2_PIN); 
-        int s3 = !digitalRead(TRACK_3_PIN); 
-        int s4 = !digitalRead(TRACK_4_PIN); 
-        int s5 = !digitalRead(TRACK_5_PIN); 
-        uint8_t sensorState = (s1 << 4) | (s2 << 3) | (s3 << 2) | (s4 << 1) | s5;
-        // 把感測器結果加權
-        long sum = 0;   // 速度權重（正右轉；負左轉）
-        int active = 0; // 偵測到黑線的感測器數量
-        if (s1 == 1) { sum += -33; active++; } 
-        if (s2 == 1) { sum += -19; active++; }
-        if (s3 == 1) { sum +=   0; active++; } 
-        if (s4 == 1) { sum +=  19; active++; }
-        if (s5 == 1) { sum +=  33; active++; }
-        // 特殊情況：全偵測或全無偵測
-        if (active > 0) {
-          error = sum / active; 
-          if (sensorState == 0b11111) {
-            error = 0;
-          }
-        } 
-        else {
-          if (lastError < 0) {
-            error = -53; 
-          } else if (lastError > 0) {
-            error = 53;  
-          } else {
-            error = 0;  
-          }
-        }
-        // PID速度計算
-        int P = error;
-        int D = error - lastError;
-        int correction = (Kp * P) + (Kd * D);
-        lastError = error; 
-        // 設置速度給馬達
-        int leftSpd  = TRACK_SPEEDL + correction;
-        int rightSpd = TRACK_SPEEDR - correction;
-        setMotorSpeed(leftSpd, rightSpd);
-        // 把狀態輸出到terminal
-        if (sensorState != lastSensorState) {
-          Serial.print(F("感測: [ ")); 
-          for(int i=4; i>=0; i--) Serial.print(bitRead(sensorState, i));
-          Serial.printf(" ] | 加權 Error: %3d | 輸出 L:%4d R:%4d\n", error, leftSpd, rightSpd);
-          lastSensorState = sensorState; 
-        }
-      } 
-      break;
+   case 3:
+  {
+    // 燈號閃爍
+    if (currentMillis - lastLedToggleMillis >= 250) {
+      ledState = !ledState;
+      digitalWrite(RED_PIN, ledState);
+      lastLedToggleMillis = currentMillis;
+    }
+
+    static unsigned long lostStartTime = 0;
+    static bool isLost = false;
+
+    int s1 = !digitalRead(TRACK_1_PIN);
+    int s2 = !digitalRead(TRACK_2_PIN);
+    int s3 = !digitalRead(TRACK_3_PIN);
+    int s4 = !digitalRead(TRACK_4_PIN);
+    int s5 = !digitalRead(TRACK_5_PIN);
+    uint8_t sensorState = (s1 << 4) | (s2 << 3) | (s3 << 2) | (s4 << 1) | s5;
+
+    long sum = 0;
+    int active = 0;
+    if (s1 == 1) { sum += -39; active++; }
+    if (s2 == 1) { sum += -19; active++; }
+    if (s3 == 1) { sum +=   0; active++; }
+    if (s4 == 1) { sum +=  19; active++; }
+    if (s5 == 1) { sum +=  39; active++; }
+
+    // ★ 修正1: 全黑路口 - 保持方向小推力，並同步更新 lastError
+    if (sensorState == 0b11111) {
+      error = (lastError > 0) ? 8 : (lastError < 0) ? -8 : 0;
+      isLost = false; // 全黑不算脫軌
+    }
+    // 有感測到線
+    else if (active > 0) {
+      error = sum / active;
+      isLost = false; // 找回線，重設脫軌狀態
+    }
+    // 全白：脫軌
+    else {
+      if (!isLost) {
+        isLost = true;
+        lostStartTime = currentMillis;
+      }
+      error = (lastError < 0) ? -38 : (lastError > 0) ? 38 : 0;
+    }
+
+    // PID 計算
+    int P = error;
+    int D = error - lastError;
+    int correction = (int)(Kp * P + Kd * D);
+    lastError = error;
+
+    int leftSpd  = TRACK_SPEEDL + correction;
+    int rightSpd = TRACK_SPEEDR - correction;
+
+    // 大角度時降速
+    if (abs(error) >= 45) {
+      leftSpd  -= 40;
+      rightSpd -= 40;
+    }
+
+    // ★ 修正2: 脫軌計時覆蓋速度，在 setMotorSpeed 之前處理
+    if (isLost) {
+      unsigned long lostDuration = currentMillis - lostStartTime;
+      if (lostDuration > 3000) {
+        leftSpd  = 0;    // 超過3秒：全停
+        rightSpd = 0;
+      } else if (lostDuration > 1500) {
+        leftSpd  = -140; // 1.5~3秒：倒車
+        rightSpd = -140;
+      }
+      // 0~1.5秒：維持PID轉向繼續找線
+    }
+
+    // ★ 修正3: 只在這裡呼叫一次 setMotorSpeed
+    setMotorSpeed(leftSpd, rightSpd);
+
+    if (sensorState != lastSensorState) {
+      Serial.print(F("感測: [ "));
+      for (int i = 4; i >= 0; i--) Serial.print(bitRead(sensorState, i));
+      Serial.printf(" ] | Error: %3d | L:%4d R:%4d | Lost:%d\n",
+                    error, leftSpd, rightSpd, isLost ? (int)(currentMillis - lostStartTime) : 0);
+      lastSensorState = sensorState;
+    }
+  }
+  break;
     case 4: // 遙控 & 不亮
     case 5: 
       { 
